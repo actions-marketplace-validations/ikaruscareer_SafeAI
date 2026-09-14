@@ -48,11 +48,11 @@ jobs:
         with:
           python-version: "3.11"
       - name: Check DCO sign-off (see DCO.md)
-        # NOTE: the checker runs from the base branch, not the PR head, so
-        # policy updates (e.g. bot exemptions) apply to already-open PRs
-        # such as dependabot bumps without requiring a rebase.
+        # Run the checker from origin/main so policy updates (e.g. bot
+        # exemptions) apply to already-open PRs without a rebase.
+        # Full fetch-depth above ensures the base SHA is in the local
+        # object store so the range resolves to PR-only commits.
         run: |
-          git fetch origin main:refs/remotes/origin/main --depth=1
           git show origin/main:scripts/check_dco.py > /tmp/check_dco_base.py
           python /tmp/check_dco_base.py --range ${{ github.event.pull_request.base.sha }}...${{ github.sha }}
 
