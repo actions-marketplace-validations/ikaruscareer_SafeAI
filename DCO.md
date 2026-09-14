@@ -39,6 +39,10 @@ are exempt: bots cannot certify origin, and their commits are
 machine-generated dependency bumps reviewed by human maintainers before
 merge.
 
+The CI job always runs the checker from the base branch (`origin/main`),
+not the PR head, so policy updates take effect on already-open PRs
+without requiring a rebase.
+
 ## Forgot the sign-off?
 
 ```bash
