@@ -42,7 +42,7 @@ jobs:
         run: |
           pip install --require-hashes -r requirements.txt
           pip install --no-deps -e .
-          pip install pytest pytest-cov
+          pip install --require-hashes -r requirements-test.txt
 
       - name: "Check: canonical release checklist"
         run: python scripts/check_release.py
@@ -253,9 +253,7 @@ jobs:
           python-version: "3.11"
 
       - name: Install build tools
-        run: |
-          pip install --require-hashes -r requirements-build.txt
-          pip install twine
+        run: pip install --require-hashes -r requirements-build.txt
 
       - name: Build package
         run: python -m build
