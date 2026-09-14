@@ -34,6 +34,11 @@ Every commit in a pull request must carry a `Signed-off-by: Name <email>`
 trailer matching the author. Pull requests verify this automatically
 (see `.github/workflows/ci.yml`, job `dco`).
 
+Automation accounts (names ending in `[bot]`, e.g. `dependabot[bot]`)
+are exempt: bots cannot certify origin, and their commits are
+machine-generated dependency bumps reviewed by human maintainers before
+merge.
+
 ## Forgot the sign-off?
 
 ```bash
