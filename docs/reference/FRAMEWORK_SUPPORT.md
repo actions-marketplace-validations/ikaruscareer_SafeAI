@@ -527,8 +527,9 @@ the community and cover the most common patterns for each framework.
 | OpenClaw config | `tests/test_config_adapters.py` | `tests/fixtures/openclaw/representative/.openclaw/config.json` | Path detection, JSON/YAML/free-text parsing, tools, models, capabilities, and MCP servers |
 | GitHub Copilot instructions | `tests/test_config_adapters.py` | `tests/fixtures/copilot/representative/.github/copilot-instructions.md` | Markdown/frontmatter/YAML parsing, tool grants, capability scanning, and MCP references |
 
-Thanks to @adnqcr7-code for framework detection tests (PRs #59, #61, #62, #63)
-and to @i-safonoff for the .cursorrules adapter (PR #113).
+Thanks to @adnqcr7-code for framework detection tests (PRs #59, #61, #62, #63),
+to @i-safonoff for the .cursorrules adapter (PR #113),
+and to @YaoSong808 for the OpenClaw and GitHub Copilot config-file adapters (PR #159).
 
 ---
 
