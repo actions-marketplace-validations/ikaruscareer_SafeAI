@@ -62,6 +62,13 @@ def build_install_command(version, find_links=""):
     letting CI exercise the real install command without depending on a
     published version. Dependencies such as PyYAML still resolve from PyPI, so
     we deliberately avoid ``--no-index`` here.
+
+    NOTE: Hash pinning (--require-hashes) is not used here because this is a
+    published GitHub Action that installs a user-specified version from PyPI.
+    The action user controls the version via the ``version`` input; hashes
+    cannot be embedded at action-define time for arbitrary versions. Users who
+    require hash verification should pin the action to a specific commit SHA
+    and use a private PyPI mirror with hash-checked packages.
     """
     if version:
         spec = f"{DIST}=={version}"
@@ -76,7 +83,7 @@ def build_install_command(version, find_links=""):
 def build_scan_argv(path, fail_on, sarif, rules="", baseline="", fail_on_new=False,
                     fail_on_escalation="", no_registry=True, extra_args=None,
                     scorecard="", scorecard_json="", scorecard_summary="",
-                    scorecard_fail_under=""):
+                    scorecard_fail_under="", pr_comment_post=False):
     """Build the ``python -m safeai scan`` argv as a list (no shell)."""
     argv = [sys.executable, "-m", "safeai", "scan", path]
     if sarif:
@@ -100,6 +107,8 @@ def build_scan_argv(path, fail_on, sarif, rules="", baseline="", fail_on_new=Fal
         argv += ["--scorecard-summary", scorecard_summary]
     if scorecard_fail_under:
         argv += ["--scorecard-fail-under", scorecard_fail_under]
+    if pr_comment_post:
+        argv += ["--pr-comment-post"]
     if extra_args:
         argv += list(extra_args)
     return argv
@@ -220,6 +229,7 @@ def main(argv=None):
     scorecard_json = action_input("scorecard-json", "safeai-scorecard.json")
     scorecard_summary = action_input("scorecard-summary", "true")
     scorecard_fail_under = action_input("scorecard-fail-under")
+    pr_comment_post = as_bool(action_input("pr-comment-post", "false"))
 
     scan_dir = resolve_path(scan_dir)
     sarif = resolve_path(sarif)
@@ -333,6 +343,7 @@ def main(argv=None):
         scorecard_json=scorecard_json,
         scorecard_summary=scorecard_summary_path,
         scorecard_fail_under=scorecard_fail_under,
+        pr_comment_post=pr_comment_post,
     )
     # Run from a neutral working directory so ``python -m safeai`` imports the
     # installed PyPI package, never a ``safeai/`` directory in the consumer's

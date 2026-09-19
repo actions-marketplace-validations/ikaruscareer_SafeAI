@@ -13,6 +13,7 @@ Determinism contract:
 """
 
 import json
+import os
 
 from safeai.kya import (
     MANIFEST_SCHEMA_VERSION,
@@ -20,7 +21,9 @@ from safeai.kya import (
     STATIC_ANALYSIS_DISCLAIMER,
 )
 from safeai.kya.assurance import build_assurance_boundary
+from safeai.kya.contract import contract_block
 from safeai.kya.fingerprints import normalize_path
+from safeai.kya.integrity import payload_digest, stamp_integrity
 from safeai.kya.util import confidence_label, redact_secrets, sha256_text
 from safeai.severity import SEVERITIES
 
@@ -70,6 +73,26 @@ def _capability_counts(agents, report):
     return dict(sorted(counts.items()))
 
 
+def _escalation_entries(report):
+    """Flatten capability-diff escalations (with remediation) for the manifest."""
+    entries = []
+    diff = report.get("capability_diff") or {}
+    for tool in diff.get("tools") or []:
+        for escalation in tool.get("escalations") or []:
+            entries.append({
+                "tool_key": tool.get("tool_key"),
+                "id": escalation.get("id"),
+                "severity": escalation.get("severity", "medium"),
+                "summary": escalation.get("summary"),
+                "before": escalation.get("before"),
+                "after": escalation.get("after"),
+                "confidence": escalation.get("confidence"),
+                "remediation": escalation.get("remediation"),
+            })
+    entries.sort(key=lambda e: (str(e.get("tool_key")), str(e.get("id"))))
+    return entries
+
+
 def build_manifest(report, *, project, scan_meta, safeai_meta, agents,
                    policy_decision=None, limitations=None):
     """Assemble the canonical manifest dict from a normalized scan report.
@@ -83,7 +106,8 @@ def build_manifest(report, *, project, scan_meta, safeai_meta, agents,
     scan_meta : dict
         Keys: ``scan_id``, ``started_at``, ``completed_at``.
     safeai_meta : dict
-        Keys: ``version``, ``ruleset_version``, ``config_hash``.
+        Keys: ``version``, ``ruleset_version``, ``config_hash``,
+        ``analyzer_versions`` (name -> version), ``parser_versions``.
     agents : list
         KYA agent records (from ``enrich.build_agent_records``).
     policy_decision : dict, optional
@@ -102,6 +126,7 @@ def build_manifest(report, *, project, scan_meta, safeai_meta, agents,
     manifest = {
         "schema_version": MANIFEST_SCHEMA_VERSION,
         "manifest_type": MANIFEST_TYPE,
+        "contract": contract_block(),
         "generated_at": scan_meta.get("completed_at"),
         "safeai": {
             "version": safeai_meta.get("version"),
@@ -111,6 +136,9 @@ def build_manifest(report, *, project, scan_meta, safeai_meta, agents,
             "custom_rules_count": safeai_meta.get("custom_rules_count", 0),
             "builtin_rules_count": safeai_meta.get("builtin_rules_count", 0),
             "rule_pack_ids": safeai_meta.get("rule_pack_ids", []),
+            "analyzer_versions": safeai_meta.get("analyzer_versions", {}),
+            "parser_versions": safeai_meta.get("parser_versions", {}),
+            "policy_profile": safeai_meta.get("policy_profile"),
         },
         "project": {
             "project_id": project.get("project_id"),
@@ -159,6 +187,7 @@ def build_manifest(report, *, project, scan_meta, safeai_meta, agents,
             for e in (report.get("dependency_inventory") or [])
         ],
         "findings": findings,
+        "escalations": _escalation_entries(report),
         "summary": {
             "risk_score": trust.get("overall_ai_risk_score"),
             "severity_counts": severity_counts,
@@ -174,7 +203,10 @@ def build_manifest(report, *, project, scan_meta, safeai_meta, agents,
         "assurance_boundary": report.get("assurance_boundary") or build_assurance_boundary(report),
         "limitations": limitations or [STATIC_ANALYSIS_DISCLAIMER],
     }
-    return manifest
+    # Offline integrity: digest covers the canonical payload (this block
+    # itself plus volatile scan-event fields are excluded). See
+    # docs/manifest/INTEGRITY.md.
+    return stamp_integrity(manifest)
 
 
 def serialize_manifest(manifest):
@@ -186,6 +218,20 @@ def write_manifest(manifest, path):
     """Write the manifest to ``path`` with deterministic serialization."""
     with open(path, "w", encoding="utf-8") as fh:
         fh.write(serialize_manifest(manifest))
+
+
+def write_digest_sidecar(manifest, manifest_path, digest_path):
+    """Write ``<canonical-sha256>  <manifest-basename>`` to ``digest_path``.
+
+    The digest is the canonical payload digest (what ``safeai manifest
+    verify`` reports), which excludes the ``integrity`` block and volatile
+    scan fields, so the sidecar is deliberately not ``sha256sum -c``
+    compatible. Only the basename is recorded so the file is identical
+    wherever the manifest is written.
+    """
+    line = f"{payload_digest(manifest)}  {os.path.basename(manifest_path)}\n"
+    with open(digest_path, "w", encoding="utf-8", newline="\n") as fh:
+        fh.write(line)
 
 
 def manifest_fingerprints(manifest):

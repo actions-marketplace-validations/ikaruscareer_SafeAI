@@ -98,7 +98,7 @@ def _persist_tool_surface(conn, manifest, scan_id, stats):
 def get_tool_snapshots(conn, scan_id):
     """Return the stored per-tool surface for a scan, sorted by tool key."""
     rows = conn.execute(
-        "SELECT tool_key, tool_kind, tool_name, framework, capabilities_json, access_summary "
+        "SELECT agent_id, tool_key, tool_kind, tool_name, framework, capabilities_json, access_summary "
         "FROM agent_tool_snapshots WHERE scan_id = ? ORDER BY tool_key",
         (scan_id,),
     ).fetchall()
@@ -109,6 +109,7 @@ def get_tool_snapshots(conn, scan_id):
         except (TypeError, ValueError):
             capabilities = []
         surface.append({
+            "agent_id": row["agent_id"],
             "tool_key": row["tool_key"],
             "tool": {
                 "kind": row["tool_kind"],
@@ -198,13 +199,18 @@ def persist_scan(conn, manifest):
             manifest_hash = sha256_text(manifest_json)
 
             policy = summary.get("policy_decision") or {}
+            plugin_versions = {
+                "analyzers": safeai.get("analyzer_versions") or {},
+                "parsers": safeai.get("parser_versions") or {},
+                "rule_packs": safeai.get("rule_pack_ids") or [],
+            }
             conn.execute(
                 "INSERT OR REPLACE INTO scans("
                 "scan_id, project_id, started_at, completed_at, files_scanned, "
                 "safeai_version, ruleset_version, config_hash, commit_sha, branch, tag, "
                 "manifest_json, manifest_hash, policy_outcome, risk_score, "
-                "agent_count, finding_count, severity_counts_json"
-                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "agent_count, finding_count, severity_counts_json, plugin_versions_json"
+                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     scan_id,
                     project_id,
@@ -224,6 +230,7 @@ def persist_scan(conn, manifest):
                     summary.get("agent_count"),
                     len(manifest.get("findings") or []),
                     json.dumps(summary.get("severity_counts") or {}, sort_keys=True),
+                    json.dumps(plugin_versions, sort_keys=True),
                 ),
             )
 

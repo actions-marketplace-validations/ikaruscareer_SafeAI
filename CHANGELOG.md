@@ -5,6 +5,300 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+## [2.3.0] - 2026-09-16
+
+**Plugin SDK and Rule Ecosystem (CE 2.3).**
+
+### Added — CE 2.3 Plugin SDK and Rule Ecosystem
+
+- Analyzer plugin registry (`safeai.analyzers`: `@register_analyzer`,
+  `discover_analyzers`, `safeai.analyzers` entry-point group) mirroring
+  the parser pattern; built-in run order preserved; third-party
+  analyzers run isolated and never fail a scan.
+- Per-scan plugin/pack versions: manifest `safeai` block stamps
+  `analyzer_versions`, `parser_versions`, and `policy_profile`;
+  registry `scans` row carries `plugin_versions_json` (schema v6,
+  additive migration); portable imports record NULL for pre-v2.3 exports.
+- Pack lifecycle: `registry export` carries pack pins per project,
+  `registry import --dry-run` warns on pin drift (advisory, never a gate).
+- Lockfile-style component integrity: `registry components --lockfile`
+  writes pinned `{type, name, path, content_hash}` pins,
+  `--check-lockfile` exits 1 on added/removed/changed components.
+- Rule-authoring scaffold: `safeai init` writes `pack_example.yaml`,
+  `fixtures/` safe/risky examples, and `tests/test_pack.py`; new
+  `safeai rules check [dir]` validates rules and runs expected-findings
+  fixtures offline (pack rules act as overrides of built-in rule IDs).
+- Community pack contract (`docs/guides/COMMUNITY_PACKS.md`): layout,
+  fixture requirements, compatibility policy, pinning, sharing.
+- ADR 0005: no `integrations` command namespace yet —
+  `--pr-comment-post` stays the single explicit network path.
+
+### Added
+
+- `safeai scan --digest-file PATH` (with `--manifest`) writes a detached sidecar
+  `<canonical-sha256>  <manifest-basename>` for independent-channel checks in CI.
+  The digest equals the one `safeai manifest verify` reports; the sidecar is
+  intentionally not `sha256sum -c` compatible.
+  Thanks to [@burakeyler](https://github.com/burakeyler) (PR #148).
+- OpenClaw (`.openclaw/` JSON/YAML, root `.openclaw.yaml`) and GitHub Copilot
+  (`.github/copilot-instructions.md`, `.copilot/instructions.md`, `.copilot/*.yml`)
+  config-file adapters with structured-first parsing, free-text fallback,
+  capability scanning, and MCP server references.
+  Thanks to [@YaoSong808](https://github.com/YaoSong808) (PR #159).
+- Benchmark corpus expanded to 21 fixtures: new `benign-static-subprocess-limitation`
+  documents the static-argument precision gap (`CAP_shell:high` fires on safe
+  `subprocess.run(["git", "--version"])`).
+  Thanks to [@Teachmeplaycode](https://github.com/Teachmeplaycode) (PR #174).
+- Policy profile name displayed in terminal and HTML reports alongside policy
+  outcome; profile omitted when absent; HTML-escaped to prevent injection.
+  Thanks to [@nikitajos7](https://github.com/nikitajos7) (PR #175).
+
+## [2.2.1] - 2026-09-12
+
+**Release-evidence integrity + offline-boundary clarity.**
+
+### Fixed — Release asset scoping
+- Release automation uploads only artifacts built for the running tag;
+  historical SBOM/provenance can no longer leak into a release.
+- New `scripts/verify_release_assets.py` gate fails the release on foreign
+  versions, unversioned `provenance.json`, missing Cosign sidecars, or
+  SHA256SUMS mismatches; SLSA provenance is version-named.
+- Removed committed historical release evidence from `release-artifacts/`
+  (generated evidence lives on GitHub Releases, not in-repo).
+
+### Changed — Offline boundary
+- Promise sharpened: "Offline and source-private by default. Network
+  activity occurs only through explicitly enabled integration commands
+  (currently only `--pr-comment-post`)."
+- `--pr-comment-post` announces itself on stderr before requesting and
+  documents token scope (`pull-requests: write`) and transmitted data
+  (rendered redacted comment only) in `docs/guides/REPORTING_GUIDE.md`.
+
+## [2.2.0] - 2026-09-12
+
+**Contract & Proof.** Governance, trust, evidence, and developer-confidence
+release: a versioned KYA manifest contract, offline integrity, structured
+escalation remediation, a reproducible benchmark corpus, and public
+Community/Corporate governance clarity. Offline, static, and backward
+compatible throughout.
+
+### Added — Manifest Contract v1
+- Published JSON Schema `schemas/safeai-manifest/v1.0.0.json` plus
+  `docs/manifest/{README,COMPATIBILITY,EXAMPLES}.md`.
+- `contract{}` block on every manifest; `safeai manifest validate` (stdlib-only).
+
+### Added — Offline Manifest Integrity
+- Canonical SHA-256 digest on manifests and registry exports;
+  `safeai manifest verify`; `registry import --require-integrity`
+  (default off); GPG-envelope docs (`docs/manifest/INTEGRITY.md`).
+
+### Added — Escalation Remediation
+- Structured remediation for all 14 `ESC_*` rules, rendered in JSON,
+  manifest, HTML, terminal, PR comment, and scorecard.
+
+### Added — Benchmarks
+- 20-fixture corpus (`benchmarks/catalog.yml`), offline runner
+  (`scripts/run_benchmarks.py`), published results (`BENCHMARKS.md`).
+
+### Added — Governance
+- `DCO.md` with CI sign-off check; `docs/GOVERNANCE_AND_EDITIONS.md`;
+  MCP scope/export-privacy policy; ADRs 0001–0004; re-baselined `ROADMAP.md`.
+
+## [2.1.2] - 2026-09-09
+
+**Cosign signing for OpenSSF Scorecard.** Adds keyless Cosign signatures to
+release artifacts to satisfy the Signed-Releases check.
+
+### Added
+- Cosign keyless signing of wheel and tarball artifacts in release workflow.
+
+## [2.1.1] - 2026-09-09
+
+**PyPI release fix.** Version 2.1.0 was already published; bumped to 2.1.1.
+
+### Fixed
+- Release pipeline: PyPI publish step now uses trusted publishing (OIDC).
+- Release pipeline: artifact paths corrected for downloaded attestations.
+- Release pipeline: GitHub release created before artifact upload.
+
+## [2.1.0] - 2026-09-09
+
+**CI/CD Hardening & Developer Experience.** Makes SafeAI a true CI gate with
+rich developer feedback, brings governance into the IDE, and makes installation
+trivial with standalone binaries.
+
+### Added — Quality Gates
+- **`--fail-on-rule`** — fail when any finding matches a rule ID pattern
+  (glob-style: `GOV_*`, `MCP_*`, `ESC_*`, etc.).
+- **`--fail-on-category`** — fail when any finding belongs to a category
+  (security, governance, capability, dataflow, prompt, mcp, dependency).
+
+### Added — PR Decoration Auto-Posting
+- **`--pr-comment-post`** — post or update the PR comment on GitHub via the
+  GitHub API. Uses marker to find and update existing comments.
+- GitHub Action input `pr-comment-post` added.
+
+### Added — Extended MCP Tool-Poisoning Detection
+- **`MCP_TOOL_SCHEMA_INJECTION`** — detects hidden instructions in input_schema
+  property descriptions, titles, and default values.
+- **`MCP_RESOURCE_DESCRIPTION_INJECTION`** — detects hidden instructions in MCP
+  resource descriptions.
+
+### Added — Standalone Binaries
+- PyInstaller spec file and build script for creating standalone binaries.
+- No Python installation required for end users.
+
+### Added — VS Code Extension MVP
+- Workspace scan and file scan commands.
+- Inline diagnostics (problem markers) for findings.
+
+### Added — Test Coverage
+- Golden fixtures for 7 new adapters: azure_foundry, bedrock_agent, dify,
+  haystack, langchain, mastra, microsoft_agent.
+- `TestFixtureCoverageCompleteness` test prevents silent coverage regression.
+
+### Fixed
+- **Issue #93** — Claude Code permission precedence correctly implements
+  `deny > ask > allow`.
+- **Issue #120** — SUPPORT_MATRIX.md now consistent with code.
+- **Issue #121** — Fixture coverage completeness check added to release CI.
+- **Issue #15** — Trust score category weights differentiated.
+
+### Changed
+- Version bumped to 2.1.0.
+- 780 tests passing (up from 751 in v2.0.1).
+
+## [2.0.1] - 2026-09-03
+
+**Release hardening.** Consolidated release pipeline with mandatory
+verification gates, GPG-signed artifacts, cross-platform verification
+instructions, and pre-release checklist.
+
+### Added
+
+- **Consolidated release pipeline** (`.github/workflows/release.yml`) —
+  6-job pipeline: checklist → build → attest → sign → publish → release.
+  Every gate must pass before the next starts. Builds are pinned to the
+  exact release commit SHA.
+- **Pre-release checklist** — blocks publication if version string, rules,
+  analyzers, compatibility tests, SARIF output, JSON report, Action I/O
+  contract, failure-class matrix, or CHANGELOG entry is inconsistent.
+- **GPG-signed release artifacts** — wheel, sdist, checksums, provenance,
+  and SBOM are all GPG-signed with detached `.asc` signatures.
+- **Cross-platform verification instructions** (`VERIFICATION.md`) —
+  step-by-step GPG, checksum, and provenance verification for Linux,
+  macOS, and Windows (PowerShell). Includes pip hash-checking.
+- **Compatibility test suite** (`tests/test_compatibility.py`) — 36 tests
+  covering golden fixtures (7 frameworks), JSON/SARIF/CLI/Action contracts,
+  and adapter contract (detect/parse for all 17 parsers).
+- **Golden fixtures** for Google ADK, OpenAI Agents, Semantic Kernel.
+- **Release channels documentation** (`RELEASE_CHANNELS.md`).
+- **Security policy** (`SECURITY.md`) with vulnerability reporting and
+  response targets.
+- **Support matrix** (`SUPPORT_MATRIX.md`) — Python versions, platforms,
+  adapters, CI, Action I/O, exit codes, rule coverage.
+
+### Changed
+
+- Version bumped to 2.0.1.
+- 731 tests passing (up from 695 in v2.0.0).
+
+## [2.0.0] - 2026-09-03
+
+**Governance Depth & Ecosystem Expansion.** Deepens governance detection with
+runaway-loop and recursion-guard rules, adds Windsurf config-file adapter,
+and presents governance gaps as a failure-class coverage matrix.
+
+### Added — Runaway-loop / recursion-guard detection
+
+- Two new `GOV_*` rules: `GOV_MAX_ITERATIONS_MISSING` (detects agent loops
+  with no max-iteration bound — `while True`, recursive calls without depth
+  limit) and `GOV_RECURSION_GUARD_MISSING` (detects recursive tool calls
+  without a recursion depth guard).
+- Both rules slot into the existing `GovernanceAnalyzer` with per-tool dedup
+  and ±10-line source confirmation.
+- Mapped to OWASP LLM06, OWASP Agentic AGENTIC08, and NIST AI RMF MANAGE_1.
+- Severity: `high` for unbounded loops, `medium` for missing recursion guards.
+
+### Added — Failure-class coverage matrix
+
+- New `failure_class_matrix` section in HTML report and JSON output groups
+  `GOV_*` findings by the class of failure they leave the agent unprepared
+  for: dependency timeout, dependency unavailable, resource exhaustion,
+  cascading failure, unbounded recursion, missing accountability.
+- Shifts operator question from "which rules fired?" to "which failure modes
+  can this agent survive?"
+- Source: Reddit community feedback (2026-09).
+
+### Added — Windsurf config-file adapter
+
+- Framework adapter for `.windsurfrules` (Windsurf IDE config file).
+- JSON/YAML/free-text structured-first parsing, capability keyword scanning,
+  tool/model extraction, unrestricted grant detection, MCP reference detection.
+- 13 tests covering detection, parsing, and integration.
+
+### Added — Evidence type schema (v1.3)
+
+- `evidence_type` field on every finding: `static-config` (parsed fields),
+  `static-pattern` (regex matches), or `runtime-observed` (reserved, nothing
+  emits it today). KYA manifest bumped to v1.3.
+
+### Changed
+
+- Governance analyzer now checks 10 controls (up from 8): added
+  `max_iterations` and `recursion_guard`.
+- 695 tests passing (up from 675 in v1.9.1).
+
+## [1.9.1] - 2026-08-30
+
+Post-release fixes for v1.9.0.
+
+### Fixed
+
+- **AGENTIC04 mojibake** — removed CJK fragment from English description in
+  `safeai/controls/catalogs.py`.
+- **Scoped governance source suppression** — suppression now scoped to tool
+  line ±10 window, avoiding masking missing controls in poly-tool modules.
+- **Removed unused regex patterns** — `_TOOL_TIMEOUT_RE`, `_TOOL_RETRY_RE`,
+  `FUNCTION_PARAM_RE` cleaned up from `safeai/analyzers/governance/analyzer.py`.
+- **Hardened LangGraph detection** — `detect()` now requires an import or
+  `StateGraph(` call, not a bare substring match.
+- **Browser rule enrichment** — added `CAP_browser_playwright`,
+  `CAP_browser_selenium`, `CAP_browser_use` to `RULE_MAPPINGS` in
+  `safeai/controls/mappings.py`.
+
+### Community contributors
+
+Thank you to the following community members for their contributions to
+SafeAI v1.9.1:
+
+- **[@i-safonoff](https://github.com/i-safonoff)** — filled missing entries
+  in RULES_REFERENCE.md (PR [#108](https://github.com/ikaruscareer/SafeAI/pull/108))
+  and fixed dataflow rule ID casing mismatch (PR
+  [#109](https://github.com/ikaruscareer/SafeAI/pull/109)).
+- **[@Solarthis](https://github.com/Solarthis)** — added MCP tool
+  description injection detection (PR
+  [#107](https://github.com/ikaruscareer/SafeAI/pull/107)).
+- **[@ARAVIND281](https://github.com/ARAVIND281)** — implemented
+  interprocedural data-flow tracking within a single file (PR
+  [#110](https://github.com/ikaruscareer/SafeAI/pull/110)) and resolved
+  Claude Code permission evaluation order (PR
+  [#111](https://github.com/ikaruscareer/SafeAI/pull/111)).
+- **[@hadbiaghiles](https://github.com/hadbiaghiles)** — added AutoGen
+  to supported frameworks documentation (PR
+  [#98](https://github.com/ikaruscareer/SafeAI/pull/98)).
+- **[@mikemikimike](https://github.com/mikemikimike)** — added adapter
+  negative detection tests (PR
+  [#90](https://github.com/ikaruscareer/SafeAI/pull/90)).
+- **[@asarakhatun17-lgtm](https://github.com/asarakhatun17-lgtm)** —
+  fixed supported frameworks consistency (PR
+  [#91](https://github.com/ikaruscareer/SafeAI/pull/91)).
+- **[@mah](https://github.com/mahirhir)** — documented Claude Code deep
+  analysis fixtures and detection approach (PR
+  [#92](https://github.com/ikaruscareer/SafeAI/pull/92)).
+
 ## [1.9.0] - 2026-08-28
 
 **Curated theme — "Component Depth & Ecosystem Foundations."** Carries the
@@ -95,8 +389,8 @@ SafeAI v1.9.0:
 - **[@Aming9303](https://github.com/Aming9303)** — `safeai registry components`
   CLI (PR [#82](https://github.com/ikaruscareer/SafeAI/pull/82)) and
   `safeai init` command (PR [#83](https://github.com/ikaruscareer/SafeAI/pull/83)).
-- **[@Aming9303](https://github.com/Aming9303)** — GitHub Actions workflow
-  example (PR [#84](https://github.com/ikaruscareer/SafeAI/pull/84)).
+- **[@D05TL3](https://github.com/D05TL3)** — GitHub Actions scanning example
+  (PR [#84](https://github.com/ikaruscareer/SafeAI/pull/84)).
 
 ## [1.7.0] - 2026-08-16
 

@@ -17,11 +17,107 @@ import re
 import yaml
 
 from safeai.analysis.capabilities import make_capability
+from safeai.analyzers import register_analyzer
 from safeai.analyzers.mcp.compatibility import (
     normalize_mcp_data,
     resolve_mcp_schema_version,
 )
 from safeai.analyzers.mcp.validators import validate_mcp_schema
+
+# --- Tool-description poisoning patterns (LLM01) ---------------------------
+# An MCP tool's `description` is injected verbatim into the agent's context,
+# so text here is an injection sink. Patterns are deliberately narrow: a
+# description legitimately explains what a tool does, and words like "act as"
+# or "disregard" appear in benign prose, so each pattern requires the
+# surrounding structure that makes it an instruction rather than a
+# description.
+_TOOL_INSTRUCTION_OVERRIDE = re.compile(
+    r"""(?:ignore|disregard|forget)\s+(?:all\s+|any\s+)?(?:the\s+)?"""
+    r"""(?:previous|prior|above|earlier|preceding)\s+"""
+    r"""(?:instructions?|prompts?|messages?|context|rules?)"""
+    r"""|you\s+are\s+now\b"""
+    r"""|new\s+instructions?\s*:"""
+    r"""|(?:reveal|print|output|repeat|show|dump)\s+(?:your\s+|the\s+)?system\s+prompt""",
+    re.IGNORECASE,
+)
+_TOOL_DELIMITER_INJECTION = re.compile(
+    r"""<\s*/?\s*(?:system|instructions?|prompt|assistant)\s*>"""
+    r"""|\[/?INST\]"""
+    r"""|<</?SYS>>"""
+    r"""|<\|[^|>]{1,40}\|>""",
+    re.IGNORECASE,
+)
+_TOOL_ROLE_MANIPULATION = re.compile(
+    r"""pretend\s+(?:to\s+be|you(?:'re|\s+are))"""
+    r"""|roleplay\s+as"""
+    r"""|from\s+now\s+on[,\s]+you\b"""
+    r"""|act\s+as\s+(?:a\s+|an\s+|the\s+)?(?:system|admin(?:istrator)?|root|superuser|developer\s+mode|DAN)\b""",
+    re.IGNORECASE,
+)
+
+_TOOL_POISON_CHECKS = (
+    ("instruction override", _TOOL_INSTRUCTION_OVERRIDE),
+    ("prompt delimiter", _TOOL_DELIMITER_INJECTION),
+    ("role manipulation", _TOOL_ROLE_MANIPULATION),
+)
+
+# --- Schema/resource poisoning patterns (v2.1) ------------------------------
+# MCP input_schema fields are rendered in agent context; hidden instructions
+# in schema descriptions or default values are injection sinks.
+_SCHEMA_DESCRIPTION_INJECTION = re.compile(
+    r"""(?:ignore|disregard|forget)\s+(?:all\s+|any\s+)?(?:the\s+)?"""
+    r"""(?:previous|prior|above|earlier|preceding)\s+"""
+    r"""(?:instructions?|prompts?|messages?|context|rules?)"""
+    r"""|you\s+are\s+now\b"""
+    r"""|new\s+instructions?\s*:""",
+    re.IGNORECASE,
+)
+
+# Obfuscated injection: base64-encoded or unicode-escaped instruction patterns.
+_OBFUSCATED_INJECTION = re.compile(
+    r"""(?:base64|\\u[0-9a-fA-F]{4}|\\x[0-9a-fA-F]{2})"""
+    r"""(?:\s*[:=]\s*|\s+)(?:ignore|disregard|forget|override|bypass)""",
+    re.IGNORECASE,
+)
+
+
+def _detect_tool_description_injection(text):
+    """Return the list of poisoning categories present in a tool description."""
+    if not text:
+        return []
+    return [label for label, pattern in _TOOL_POISON_CHECKS if pattern.search(text)]
+
+
+def _detect_schema_injection(schema):
+    """Check input_schema fields for hidden instructions.
+
+    Returns a list of (field_path, category) tuples for any injection found.
+    """
+    findings = []
+    if not schema or not isinstance(schema, dict):
+        return findings
+
+    def _check_value(val, path):
+        if isinstance(val, str):
+            if _SCHEMA_DESCRIPTION_INJECTION.search(val):
+                findings.append((path, "instruction override"))
+            if _TOOL_DELIMITER_INJECTION.search(val):
+                findings.append((path, "prompt delimiter"))
+            if _TOOL_ROLE_MANIPULATION.search(val):
+                findings.append((path, "role manipulation"))
+            if _OBFUSCATED_INJECTION.search(val):
+                findings.append((path, "obfuscated injection"))
+        elif isinstance(val, dict):
+            for k, v in val.items():
+                _check_value(v, f"{path}.{k}")
+        elif isinstance(val, list):
+            for i, v in enumerate(val):
+                _check_value(v, f"{path}[{i}]")
+
+    for key, val in schema.items():
+        _check_value(val, key)
+    return findings
+
 
 
 def _base_finding(
@@ -42,6 +138,7 @@ def _base_finding(
 ):
     return {
         "rule_id": rule_id,
+        "evidence_type": "static-config",  # #94 - reads declared MCP server and tool entries
         "severity": severity,
         "message": message,
         "file": path,
@@ -60,6 +157,7 @@ def _base_finding(
     }
 
 
+@register_analyzer
 class MCPAnalyzer:
     name = "mcp"
 
@@ -402,6 +500,64 @@ class MCPAnalyzer:
 
                     full_tool_text = f"{tool_name} {tool_desc} {tool_params}"
 
+                    # Tool-description poisoning: hidden instructions in text
+                    # that is injected straight into the agent's context.
+                    poison_kinds = _detect_tool_description_injection(tool_desc)
+                    if poison_kinds:
+                        findings.append(_base_finding(
+                            "MCP_TOOL_DESCRIPTION_INJECTION",
+                            "high",
+                            f"MCP tool '{tool_name}' description contains hidden instructions ({', '.join(poison_kinds)})",
+                            path,
+                            1,
+                            capability="MCP",
+                            evidence=tool_desc[:200],
+                            reason=(
+                                "MCP tool descriptions are injected into the agent's context. "
+                                "Instruction-like text here can hijack the agent (tool poisoning)."
+                            ),
+                            remediation=(
+                                "Treat tool descriptions as untrusted input. Remove instruction text, "
+                                "prompt delimiters and role directives, and pin trusted server versions."
+                            ),
+                            score_contribution=15,
+                            schema_version=schema_version,
+                            validation_rule="tool_description_injection",
+                            affected_object=tool_name,
+                        ))
+                        findings[-1]["owasp_llm"] = "LLM01"
+                        findings[-1]["risk_category"] = "Prompt Injection"
+
+                    # Schema poisoning: hidden instructions in input_schema fields.
+                    tool_schema = tool_def.get("input_schema") if isinstance(tool_def, dict) else None
+                    if tool_schema:
+                        schema_injections = _detect_schema_injection(tool_schema)
+                        for field_path, category in schema_injections:
+                            findings.append(_base_finding(
+                                "MCP_TOOL_SCHEMA_INJECTION",
+                                "high",
+                                f"MCP tool '{tool_name}' schema field '{field_path}' contains hidden instructions ({category})",
+                                path,
+                                1,
+                                capability="MCP",
+                                evidence=f"schema.{field_path}"[:200],
+                                reason=(
+                                    "MCP input_schema fields are rendered in agent context. "
+                                    "Instruction-like text in schema descriptions or defaults "
+                                    "can hijack the agent (tool poisoning)."
+                                ),
+                                remediation=(
+                                    "Treat schema fields as untrusted input. Remove instruction text "
+                                    "from schema descriptions, titles, and default values."
+                                ),
+                                score_contribution=15,
+                                schema_version=schema_version,
+                                validation_rule="tool_schema_injection",
+                                affected_object=tool_name,
+                            ))
+                            findings[-1]["owasp_llm"] = "LLM01"
+                            findings[-1]["risk_category"] = "Prompt Injection"
+
                     # Overly broad tool: wildcards or unrestricted patterns
                     if re.search(r"\*|all|any|unrestricted|no.limit|bypass", tool_params, flags=re.IGNORECASE):
                         findings.append(_base_finding(
@@ -439,6 +595,36 @@ class MCPAnalyzer:
                             validation_rule="resource_sensitivity",
                             affected_object="resources",
                         ))
+
+                    # Resource description poisoning: hidden instructions in
+                    # resource descriptions that are injected into agent context.
+                    if isinstance(resource, dict):
+                        resource_desc = resource.get("description", "")
+                        resource_injections = _detect_tool_description_injection(resource_desc)
+                        if resource_injections:
+                            findings.append(_base_finding(
+                                "MCP_RESOURCE_DESCRIPTION_INJECTION",
+                                "high",
+                                f"MCP resource description contains hidden instructions ({', '.join(resource_injections)})",
+                                path,
+                                1,
+                                capability="MCP",
+                                evidence=resource_desc[:200],
+                                reason=(
+                                    "MCP resource descriptions are injected into the agent's context. "
+                                    "Instruction-like text here can hijack the agent (tool poisoning)."
+                                ),
+                                remediation=(
+                                    "Treat resource descriptions as untrusted input. Remove instruction text, "
+                                    "prompt delimiters and role directives from resource metadata."
+                                ),
+                                score_contribution=15,
+                                schema_version=schema_version,
+                                validation_rule="resource_description_injection",
+                                affected_object="resources",
+                            ))
+                            findings[-1]["owasp_llm"] = "LLM01"
+                            findings[-1]["risk_category"] = "Prompt Injection"
 
                 # --- Transport security ---
                 transport_text = json.dumps(asset["transports"], default=str)
@@ -486,6 +672,7 @@ class MCPAnalyzer:
 
         findings.append({
             "rule_id": "MCP_ASSETS_DISCOVERED",
+            "evidence_type": "static-config",  # #94 - reads declared MCP server and tool entries
             "severity": "info",
             "message": f"Discovered MCP assets: {len(assets)}",
             "file": "<scan>",

@@ -170,6 +170,11 @@
   severity: high
   owasp_llm: LLM06
 
+- id: MCP_TOOL_DESCRIPTION_INJECTION
+  description: MCP tool description contains patterns that may be hidden instructions
+  severity: high
+  owasp_llm: LLM01
+
 - id: MCP_RESOURCE_SENSITIVE
   description: MCP resource exposes sensitive data patterns
   severity: high
@@ -357,6 +362,16 @@
 
 - id: GOV_HEALTH_CHECK_MISSING
   description: Missing health check or readiness probe on agent tool
+  severity: medium
+  owasp_llm: LLM06
+
+- id: GOV_MAX_ITERATIONS_MISSING
+  description: Missing max-iteration bound on agent loop — enables unbounded loops
+  severity: high
+  owasp_llm: LLM06
+
+- id: GOV_RECURSION_GUARD_MISSING
+  description: Missing recursion depth guard on agent tool — enables unbounded recursion
   severity: medium
   owasp_llm: LLM06
 

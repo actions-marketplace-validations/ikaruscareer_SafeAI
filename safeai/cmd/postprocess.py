@@ -78,6 +78,8 @@ class ScanPostProcessor:
         """Execute all stages in order; returns ``None`` normally or an int
         exit code for an early failure (e.g. --strict-registry)."""
         self._configure_logging()
+        if getattr(self.args, "digest_file", None) and not self.args.manifest_path:
+            self.parser.error("--digest-file requires --manifest")
         self._load_baseline()
         self._run_scan()
         self._normalize()
@@ -91,6 +93,10 @@ class ScanPostProcessor:
         early = self._persist_registry()
         if early is not None:
             return early
+        from safeai.report.failure_matrix import build_failure_class_matrix
+        self.report["failure_class_matrix"] = build_failure_class_matrix(
+            self.report.get("findings", [])
+        )
         self._write_outputs()
         return self._compute_exit_code()
 
@@ -203,6 +209,8 @@ class ScanPostProcessor:
             policy_doc = kya_policy.merge_profile(profile, policy_doc)
         self.policy_decision = kya_policy.evaluate_policy(policy_doc, self.report)
         self.report["policy_decision"] = self.policy_decision
+        self.report["policy_profile"] = profile_name
+        self.policy_profile_name = profile_name
 
     def _resolve_identity(self):
         from safeai.kya.enrich import build_agent_records
@@ -222,6 +230,21 @@ class ScanPostProcessor:
             self.args.rules, scan_root=self.directory
         )
         self.scan_id = new_scan_id()
+        safeai_version = _safeai_version()
+
+        # CE 2.3: per-scan plugin/pack versions. Built-ins resolve to the
+        # SafeAI version; entry-point plugins carry their dist version.
+        from safeai.analyzers import analyzer_records
+        from safeai.frameworks import parser_records
+
+        analyzer_versions = {
+            rec["name"]: rec["version"] or safeai_version
+            for rec in analyzer_records()
+        }
+        parser_versions = {
+            rec["name"]: rec["version"] or safeai_version
+            for rec in parser_records()
+        }
 
         effective_config = {
             "rules_dir": os.path.abspath(self.args.rules) if self.args.rules else None,
@@ -236,6 +259,9 @@ class ScanPostProcessor:
             "custom_rules_count": self.rule_pack_metadata.get("custom_rules_count", 0),
             "builtin_rules_count": self.rule_pack_metadata.get("builtin_rules_count", 0),
             "rule_pack_ids": self.rule_pack_metadata.get("rule_pack_ids", []),
+            "analyzer_versions": analyzer_versions,
+            "parser_versions": parser_versions,
+            "policy_profile": getattr(self, "policy_profile_name", None),
         }
         try:
             source_root = os.path.relpath(self.directory, os.getcwd())
@@ -328,10 +354,13 @@ class ScanPostProcessor:
         return None
 
     def _write_outputs(self):
-        from safeai.kya.manifest import write_manifest
+        from safeai.kya.manifest import write_digest_sidecar, write_manifest
 
         if self.args.manifest_path:
             write_manifest(self.manifest, self.args.manifest_path)
+            if getattr(self.args, "digest_file", None):
+                write_digest_sidecar(self.manifest, self.args.manifest_path,
+                                     self.args.digest_file)
 
         if self.args.sarif:
             from safeai.report.sarif import write_sarif
@@ -346,16 +375,25 @@ class ScanPostProcessor:
             write_html(self.report, self.args.html_path)
 
         # --- Reviewer-facing PR comment (written locally; never posted) ---
-        if self.args.pr_comment_path or self.args.pr_comment_stdout:
+        if self.args.pr_comment_path or self.args.pr_comment_stdout or self.args.pr_comment_post:
             from safeai.kya.ci_context import detect_ci_context
             from safeai.report.pr_comment import render_pr_comment
 
-            comment = render_pr_comment(self.report, ci_context=detect_ci_context())
+            ci_context = detect_ci_context()
+            comment = render_pr_comment(self.report, ci_context=ci_context)
             if self.args.pr_comment_path:
                 with open(self.args.pr_comment_path, "w", encoding="utf-8", newline="\n") as handle:
                     handle.write(comment)
             if self.args.pr_comment_stdout:
                 sys.stdout.write(comment)
+            if self.args.pr_comment_post:
+                from safeai.report.pr_comment import post_pr_comment
+                url = post_pr_comment(self.report, ci_context=ci_context)
+                if url:
+                    sys.stderr.write(f"safeai: PR comment posted: {url}\n")
+                else:
+                    sys.stderr.write("safeai: failed to post PR comment (check GITHUB_TOKEN "
+                                     "and CI context)\n")
 
         # --- SafeAI Security Scorecard ---
         scorecard_requested = any([
@@ -402,6 +440,8 @@ class ScanPostProcessor:
         print_summary(self.report)
 
     def _compute_exit_code(self):
+        import fnmatch
+
         from safeai.severity import SEVERITIES
 
         LEVELS = list(SEVERITIES)
@@ -451,5 +491,46 @@ class ScanPostProcessor:
             score = self.scorecard["safeai_security_scorecard"]["summary"]["score"]
             if score < scorecard_fail_under:
                 fail = True
+
+        # --fail-on-rule: fail when any finding matches a rule ID pattern.
+        # Patterns are glob-style (fnmatch): GOV_*, MCP_*, ESC_COMBO_*, etc.
+        # Multiple patterns are OR'd (any match triggers failure).
+        fail_on_rule = getattr(self.args, "fail_on_rule", None) or []
+        if fail_on_rule:
+            for finding in candidates:
+                rule_id = finding.get("rule_id", "")
+                for pattern in fail_on_rule:
+                    if fnmatch.fnmatch(rule_id, pattern):
+                        fail = True
+                        break
+                if fail:
+                    break
+
+        # --fail-on-category: fail when any finding belongs to a category.
+        # Categories are mapped from rule_id prefixes. Multiple categories
+        # are OR'd (any match triggers failure).
+        fail_on_category = getattr(self.args, "fail_on_category", None) or []
+        if fail_on_category:
+            _CATEGORY_MAP = {
+                "security": {"DATA_LEAKAGE", "DATAFLOW", "PROMPT", "PROMPT_FILE"},
+                "governance": {"GOV_"},
+                "capability": {"CAP_", "ESC_"},
+                "dataflow": {"DATAFLOW", "TOXIC_FLOW"},
+                "prompt": {"PROMPT", "PROMPT_FILE"},
+                "mcp": {"MCP_"},
+                "dependency": {"DEP_"},
+            }
+            for finding in candidates:
+                rule_id = finding.get("rule_id", "")
+                for cat in fail_on_category:
+                    prefixes = _CATEGORY_MAP.get(cat, set())
+                    for prefix in prefixes:
+                        if rule_id.startswith(prefix):
+                            fail = True
+                            break
+                    if fail:
+                        break
+                if fail:
+                    break
 
         return 1 if fail else 0

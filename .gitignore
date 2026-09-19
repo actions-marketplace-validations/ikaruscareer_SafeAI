@@ -6,6 +6,20 @@ dist/
 build/
 *.egg
 
+# Binary artifacts (never commit)
+*.whl
+*.tar.gz
+*.exe
+*.dll
+*.so
+*.dylib
+release-artifacts/*.whl
+release-artifacts/*.tar.gz
+# Generated per-release evidence (lives on GitHub Releases, not in-repo)
+release-artifacts/safeai-*.spdx.json
+release-artifacts/safeai-*-provenance.json
+release-artifacts/SHA256SUMS
+
 # Testing
 .coverage*
 .pytest_cache/
@@ -28,7 +42,11 @@ report.sarif
 safeai-manifest.json
 safeai-scorecard.json
 safeai-scorecard.md
+out.json
 community-scans/reports/
+
+# Temporary files
+gpg-key-config.txt
 
 # KYA local registry (private, machine-local state)
 .safeai/registry.db

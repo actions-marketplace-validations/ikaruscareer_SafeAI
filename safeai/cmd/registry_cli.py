@@ -7,6 +7,7 @@ evidence from a SQLite registry. Output formats: ``table`` (default),
 
 import json
 import os
+import sqlite3
 import sys
 
 from safeai.kya import STATIC_ANALYSIS_DISCLAIMER
@@ -333,10 +334,78 @@ def cmd_export(args):
     return 0
 
 
+def cmd_import(args):
+    """Import a portable inventory, or preview its deterministic merge plan."""
+    from safeai.kya.importer import import_inventory, load_inventory, plan_import
+    from safeai.kya.registry import init_registry, migrate
+
+    document = load_inventory(args.file,
+                              require_integrity=getattr(args, "require_integrity", False))
+    if args.dry_run and not registry_exists(args.registry_path):
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys=ON")
+        migrate(conn)
+    elif args.dry_run:
+        conn = connect(args.registry_path)
+    else:
+        conn, _ = init_registry(args.registry_path)
+    try:
+        if args.dry_run:
+            stats = plan_import(conn, document, force=args.force)
+        else:
+            stats = import_inventory(conn, document, force=args.force)
+    finally:
+        conn.close()
+    prefix = "Would import" if args.dry_run else "Imported"
+    print(f"{prefix} inventory from {args.file}")
+    drift = stats.pop("pin_drift", None) or []
+    for key, value in stats.items():
+        print(f"  {key}: {value}")
+    for warning in drift:
+        print(f"  warning: pack pin drift — {warning}")
+    return 0
+
+
 def cmd_components(args):
     """List tracked components and optionally their consuming agents."""
+    import json as _json
+
+    from safeai.kya.lockfile import build_lockfile, check_lockfile
+
     conn = _open_registry(args.registry_path)
     try:
+        lockfile_path = getattr(args, "lockfile", None)
+        project_scope = getattr(args, "project", None)
+        if lockfile_path:
+            document = build_lockfile(
+                conn, component_type=getattr(args, "component_type", None),
+                project_id=project_scope,
+            )
+            with open(lockfile_path, "w", encoding="utf-8", newline="\n") as handle:
+                handle.write(_json.dumps(document, indent=2, sort_keys=True))
+                handle.write("\n")
+            print(f"Wrote component lockfile ({len(document['components'])} pins) to {lockfile_path}")
+            return 0
+
+        check_path = getattr(args, "check_lockfile", None)
+        if check_path:
+            with open(check_path, encoding="utf-8") as handle:
+                lockfile = _json.load(handle)
+            drift = check_lockfile(
+                conn, lockfile, component_type=getattr(args, "component_type", None),
+                project_id=project_scope,
+            )
+            total = sum(len(drift[k]) for k in ("added", "removed", "changed"))
+            if total == 0:
+                print("Component lockfile holds: no drift.")
+                return 0
+            print(f"Component lockfile drift: {total} difference(s)")
+            for kind in ("added", "removed", "changed"):
+                for entry in drift[kind]:
+                    print(f"  {kind}: {entry}")
+            return 1
+
         components = list_components_deduped(
             conn, component_type=getattr(args, "component_type", None)
         )
@@ -493,6 +562,7 @@ def run_registry_command(args):
             "history": cmd_history,
             "diff": cmd_diff,
             "export": cmd_export,
+            "import": cmd_import,
             "components": cmd_components,
             "metadata": cmd_metadata,
         }[args.registry_command]

@@ -12,6 +12,8 @@ scoring category and HTML report governance summary section.
 
 import re
 
+from safeai.analyzers import register_analyzer
+
 # Patterns for detecting governance controls in code
 _TIMEOUT_RE = re.compile(
     r"\b(?:timeout|time_out|request_timeout|connect_timeout|read_timeout)"
@@ -53,6 +55,20 @@ _HEALTH_CHECK_RE = re.compile(
     r"(?:\s*[=:]\s*|\s*\()",
     re.IGNORECASE,
 )
+# Runaway-loop / token-bombing detection: patterns that indicate the agent
+# lacks iteration bounds, enabling unbounded loops or unbounded recursion.
+_MAX_ITERATIONS_RE = re.compile(
+    r"\b(?:max_iterations|max_iter|max_steps|max_cycles|max_loops|"
+    r"iteration_limit|step_limit|loop_limit|recursion_limit|max_depth)"
+    r"(?:\s*[=:]\s*|\s*\()",
+    re.IGNORECASE,
+)
+_RECURSION_GUARD_RE = re.compile(
+    r"\b(?:recursion_depth|recursion_limit|call_depth|depth_limit|max_recursion|"
+    r"max_call_depth|recurse_guard|recursion_guard)"
+    r"(?:\s*[=:]\s*|\s*\()",
+    re.IGNORECASE,
+)
 
 def _find_governance_controls(content, near_line=None, window=10):
     """Scan file content for governance control patterns.
@@ -75,6 +91,8 @@ def _find_governance_controls(content, near_line=None, window=10):
         "circuit_breaker": _CIRCUIT_BREAKER_RE,
         "backpressure": _BACKPRESSURE_RE,
         "health_check": _HEALTH_CHECK_RE,
+        "max_iterations": _MAX_ITERATIONS_RE,
+        "recursion_guard": _RECURSION_GUARD_RE,
     }
 
     for i, line in enumerate(content.splitlines(), 1):
@@ -100,6 +118,8 @@ def _tool_has_control(tool_data, control_name):
             "circuit_breaker": ["circuit_breaker", "breaker", "circuit_break"],
             "backpressure": ["backpressure", "back_pressure", "queue_size", "max_concurrent", "max_workers"],
             "health_check": ["health_check", "healthcheck", "liveness", "readiness", "is_healthy"],
+            "max_iterations": ["max_iterations", "max_iter", "max_steps", "max_cycles", "max_loops", "iteration_limit", "step_limit", "loop_limit"],
+            "recursion_guard": ["recursion_depth", "call_depth", "depth_limit", "max_recursion", "max_call_depth", "recurse_guard", "recursion_guard"],
         }
         for key in key_map.get(control_name, []):
             if key in kwargs:
@@ -117,6 +137,7 @@ def _finding(rule_id, rule, message, path, line, tool_name=None, evidence=None, 
         remediation = rule.get("remediation") or "Add the missing governance control to this tool."
     return {
         "rule_id": rule_id,
+        "evidence_type": "static-config",  # #94 - reports a declared control being absent
         "severity": sev,
         "message": message,
         "file": path,
@@ -138,6 +159,7 @@ def _finding(rule_id, rule, message, path, line, tool_name=None, evidence=None, 
     }
 
 
+@register_analyzer(phase="component")
 class GovernanceAnalyzer:
     """Detects missing operational governance controls on agent tools.
 
@@ -177,7 +199,8 @@ class GovernanceAnalyzer:
                 )
 
                 for control in ["timeout", "retry", "approval", "audit", "rate_limit",
-                                "circuit_breaker", "backpressure", "health_check"]:
+                                "circuit_breaker", "backpressure", "health_check",
+                                "max_iterations", "recursion_guard"]:
                     if _tool_has_control(tool, control):
                         continue
                     if control in source_controls:

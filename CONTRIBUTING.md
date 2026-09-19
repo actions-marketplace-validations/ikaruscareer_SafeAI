@@ -67,7 +67,13 @@ python -m pytest -v
 
 # Run with coverage
 python -m pytest --cov=safeai
+
+# Verify release metadata, rules, changelog, and Action I/O consistency
+python scripts/check_release.py
 ```
+
+The release workflow runs the same checker before building or publishing
+artifacts, so failures block the release at the pre-release checklist gate.
 
 ---
 
@@ -85,11 +91,16 @@ python -m pytest --cov=safeai
 
 ## Pull Request Process
 
-1. Ensure all tests pass
-2. Add tests for new functionality
-3. Update documentation if needed
-4. Fill out the PR template completely
-5. Reference any related issues
+1. Sign off every commit (`git commit -s`; see [DCO.md](./DCO.md))
+2. Ensure all tests pass
+3. Add tests for new functionality
+4. Update documentation if needed
+5. Fill out the PR template completely
+6. Reference any related issues
+
+All commits are checked for `Signed-off-by` trailers in CI. Note the
+[Community/Corporate boundary](./docs/GOVERNANCE_AND_EDITIONS.md):
+detection improvements always belong to the free Community core.
 
 ### What reviewers look for:
 
@@ -139,7 +150,21 @@ We are grateful to the following community members for their contributions:
 
 | Contributor | Contributions |
 |-------------|---------------|
+| [@i-safonoff](https://github.com/i-safonoff) | `.cursorrules` framework adapter, `rule_coverage_summary()`, RULES_REFERENCE.md, dataflow rule ID casing fix |
+| [@ARAVIND281](https://github.com/ARAVIND281) | Claude Code permission evaluation order fix, interprocedural data-flow tracking |
+| [@Solarthis](https://github.com/Solarthis) | MCP tool description injection detection |
 | [@Aming9303](https://github.com/Aming9303) | `safeai registry components` CLI, `safeai init` command, GitHub Actions workflow example |
+| [@adnqcr7-code](https://github.com/adnqcr7-code) | Framework detection tests (LangGraph, CrewAI, LlamaIndex, n8n, Claude Code), CI integration docs, SARIF review guidance |
+| [@hadbiaghiles](https://github.com/hadbiaghiles) | AutoGen framework documentation |
+| [@D05TL3](https://github.com/D05TL3) | GitHub Actions scanning example |
+| [@mikemikimike](https://github.com/mikemikimike) | Adapter negative detection tests |
+| [@mah](https://github.com/mahirhir) | Claude Code deep analysis documentation |
+| [@asarakhatun17-lgtm](https://github.com/asarakhatun17-lgtm) | Supported frameworks consistency fix |
+| [@yugaaank](https://github.com/yugaaank) | Capability detectors (Docker, Kubernetes, Redis, S3, GCP, Slack, Jira, browser automation) |
+| [@burakeyler](https://github.com/burakeyler) | `--digest-file` manifest digest sidecar (PR #148) |
+| [@YaoSong808](https://github.com/YaoSong808) | OpenClaw and GitHub Copilot config-file adapters (PR #159) |
+| [@Teachmeplaycode](https://github.com/Teachmeplaycode) | Benchmark corpus expansion, static subprocess precision gap documentation (PR #174) |
+| [@nikitajos7](https://github.com/nikitajos7) | Policy profile display in terminal and HTML reports (PR #175) |
 
 Your contributions help make AI safer for everyone. Thank you!
 
@@ -155,3 +180,5 @@ Be respectful, inclusive, and constructive. We welcome contributors of all backg
 ---
 
 Thank you for making AI safer — one contribution at a time.
+
+If SafeAI is useful to you, consider giving the repo a ⭐ — it helps other teams discover the project and is one of the easiest ways to support it besides code.

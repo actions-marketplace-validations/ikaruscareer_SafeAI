@@ -17,6 +17,32 @@ def _sev_badge(severity):
     return html_kit.sev_badge(severity)
 
 
+def _escalation_remediation_html(escalation):
+    """Collapsible remediation for one escalation (absent on old reports)."""
+    remediation = escalation.get("remediation") or {}
+    actions = remediation.get("recommended_actions") or []
+    if not isinstance(actions, list):
+        actions = [actions]
+    why = remediation.get("why_it_matters") or ""
+    questions = remediation.get("review_questions") or []
+    limitations = remediation.get("limitations") or []
+    if not (why or actions or questions):
+        return ""
+    body = ""
+    if why:
+        body += f"<p>{escape(str(why))}</p>"
+    if actions:
+        items = "".join(f"<li>{escape(str(a))}</li>" for a in actions)
+        body += f"<p><strong>Recommended actions</strong></p><ul>{items}</ul>"
+    if questions:
+        items = "".join(f"<li>{escape(str(q))}</li>" for q in questions)
+        body += f"<p><strong>Review questions</strong></p><ul>{items}</ul>"
+    if limitations:
+        items = "".join(f"<li>{escape(str(l))}</li>" for l in limitations)
+        body += f"<p class='muted'>Limitations: {items}</p>"
+    return f"<details><summary>Remediation</summary>{body}</details>"
+
+
 def _escalation_section(report):
     """Render the capability escalation summary (v1.4 capability_diff)."""
     diff = report.get("capability_diff")
@@ -42,7 +68,8 @@ def _escalation_section(report):
         esc_html = "".join(
             f"<div>{_sev_badge(e.get('severity', 'info'))} "
             f"<code>{escape(str(e.get('id', '')))}</code> "
-            f"{escape(str(e.get('summary', '')))}{' <span class=muted>(inferred)</span>' if e.get('inferred') else ''}</div>"
+            f"{escape(str(e.get('summary', '')))}{' <span class=muted>(inferred)</span>' if e.get('inferred') else ''}"
+            f"{_escalation_remediation_html(e)}</div>"
             for e in escalations
         ) or "<span class='muted'>no per-rule escalation</span>"
         tool_rows.append(
@@ -134,6 +161,7 @@ def _kya_section(report):
     agents = report.get("kya_agents")
     registry = report.get("registry") or {}
     policy = report.get("policy_decision") or {}
+    policy_profile = report.get("policy_profile")
     if agents is None and not policy and not registry:
         return ""
 
@@ -165,9 +193,15 @@ def _kya_section(report):
 
     policy_html = ""
     if policy:
+        profile_html = (
+            f"<p><strong>Policy profile:</strong> {escape(str(policy_profile))}</p>"
+            if policy_profile
+            else ""
+        )
         reasons = "".join(f"<li>{escape(str(r))}</li>" for r in (policy.get("reasons") or []))
         policy_html = (
             f"<p><strong>Policy outcome:</strong> {escape(str(policy.get('outcome', '')))}</p>"
+            f"{profile_html}"
             f"<ul>{reasons}</ul>"
         )
 
@@ -271,6 +305,9 @@ def write_html(report, path):
         f for f in findings if f.get("risk_category") in {"Governance", "Integration", "Identity"}
     ]
 
+    from safeai.report.failure_matrix import build_failure_class_matrix
+    failure_matrix = build_failure_class_matrix(findings)
+
     severity_counts = "".join(
         f"<div style='margin:2px 0'>{_sev_badge(k)} <strong>{v}</strong></div>"
         for k, v in counts.items()
@@ -321,6 +358,19 @@ def write_html(report, path):
         ["Rule", "Category", "Message", "Recommendation"],
         [[f.get('rule_id', ''), f.get('risk_category', ''), f.get('message', ''), f.get('remediation', '')] for f in governance_summary],
         empty="No governance findings.",
+    )}
+
+    <h2>Failure-Class Coverage Matrix</h2>
+    <p class='muted'>Groups governance findings by the class of failure they leave the agent unprepared for. A class is "uncovered" if any of its associated controls are missing.</p>
+    {html_kit.data_table(
+        ["Failure Class", "Status", "Description", "Uncovered Controls"],
+        [[
+            entry["failure_class"],
+            '<span style="color:#dc2626">Uncovered</span>' if entry["status"] == "uncovered" else '<span style="color:#16a34a">Covered</span>',
+            entry["description"],
+            ", ".join(entry["covered_rules"]) or "—",
+        ] for entry in failure_matrix],
+        empty="No governance controls to evaluate.",
     )}
 
     <h2>Findings</h2>

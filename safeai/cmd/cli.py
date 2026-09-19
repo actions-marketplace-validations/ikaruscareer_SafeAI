@@ -9,8 +9,11 @@ Usage::
                             [--pr-comment <path>] [--pr-comment-stdout]
                             [--fail-on <level>] [--fail-on-new]
                             [--fail-on-escalation <level>]
+                            [--fail-on-rule <pattern>] [--fail-on-category <name>]
     safeai init [--profile <name>] [--force]
-    safeai registry list|show|history|diff|export|components ...
+    safeai registry list|show|history|diff|export|import|components ...
+    safeai manifest validate|verify <file>
+    safeai rules check [dir]
 
 KYA (Know Your Agent) behavior:
   * Every scan produces normalized findings (stable fingerprints,
@@ -24,7 +27,9 @@ KYA (Know Your Agent) behavior:
   * ``--pr-comment`` writes a reviewer-facing Markdown summary of
     capability escalations to a file. SafeAI never posts it anywhere;
     publishing is the CI workflow's job.
-  * All outputs remain local: no network calls, no uploads.
+  * All outputs remain local: no network calls, no uploads — except the
+    explicitly enabled ``--pr-comment-post`` integration, which makes one
+    GitHub API request and announces itself on stderr.
 """
 
 import argparse
@@ -54,6 +59,9 @@ def _build_parser():
                       help="With --baseline: fail only on NEW or REGRESSED findings at/above --fail-on severity")
     scan.add_argument("--manifest", dest="manifest_path",
                       help="Write the canonical KYA manifest (safeai-manifest.json) to this path")
+    scan.add_argument("--digest-file", dest="digest_file",
+                      help="With --manifest: also write '<canonical-sha256>  <manifest-basename>' "
+                           "to PATH (the digest `safeai manifest verify` reports; not a raw file hash)")
     scan.add_argument("--registry",
                       help="Registry database path (default: shared registry — "
                            "SAFEAI_REGISTRY env var or ~/.safeai/registry.db)")
@@ -66,6 +74,11 @@ def _build_parser():
                            "escalations to PATH (never posted anywhere)")
     scan.add_argument("--pr-comment-stdout", action="store_true",
                       help="Print the PR comment Markdown to stdout")
+    scan.add_argument("--pr-comment-post", action="store_true",
+                      help="Post or update the PR comment on GitHub (requires GITHUB_TOKEN "
+                           "and CI context with PR number and repository). "
+                           "NETWORK: the one explicitly enabled integration that "
+                           "makes a GitHub API request; announces itself on stderr.")
     scan.add_argument("--fail-on-escalation", choices=["critical", "high", "medium"],
                       help="Fail the scan when a capability escalation at or above "
                            "this severity is detected (requires --baseline)")
@@ -94,6 +107,16 @@ def _build_parser():
                       help="Fail the scan when the overall score is below SCORE "
                            "(0-10). This is an additional score-based gate and does "
                            "not change --fail-on/--fail-on-new/--fail-on-escalation.")
+    scan.add_argument("--fail-on-rule", dest="fail_on_rule", nargs="+", metavar="PATTERN",
+                      help="Fail when any finding matches a rule ID pattern "
+                           "(glob-style: GOV_*, MCP_*, ESC_*, etc.). Multiple "
+                           "patterns are OR'd. Example: --fail-on-rule GOV_* MCP_*")
+    scan.add_argument("--fail-on-category", dest="fail_on_category", nargs="+", metavar="NAME",
+                      choices=["security", "governance", "capability", "dataflow",
+                               "prompt", "data_leakage", "mcp", "dependency"],
+                      help="Fail when any finding belongs to this category. "
+                           "Multiple categories are OR'd. "
+                           "Example: --fail-on-category security governance")
     scan.add_argument("--mcp-ide-scopes", action="store_true",
                       help="Discover MCP configs in IDE scopes (.cursor/, .windsurf/, "
                            ".vscode/) in addition to the scanned repo")
@@ -136,6 +159,11 @@ def _build_parser():
                           help="Filter by component type")
     reg_comp.add_argument("--agents", action="store_true",
                           help="Show which agents reference each component")
+    reg_comp.add_argument("--lockfile", metavar="PATH",
+                          help="Write a pinned component lockfile and exit")
+    reg_comp.add_argument("--check-lockfile", metavar="PATH", dest="check_lockfile",
+                          help="Exit 1 when components drifted from the lockfile")
+    reg_comp.add_argument("--project", help="Scope to a single project ID (lockfile only)")
 
     reg_diff = reg_sub.add_parser("diff", help="Compare two snapshots of an agent")
     _common(reg_diff)
@@ -152,6 +180,18 @@ def _build_parser():
     reg_export.add_argument("--include-history", action="store_true")
     reg_export.add_argument("--include-suppressed", action="store_true")
 
+    reg_import = reg_sub.add_parser("import", help="Import a portable KYA inventory document")
+    _common(reg_import)
+    reg_import.add_argument("file", help="Portable inventory JSON file")
+    reg_import.add_argument("--dry-run", action="store_true",
+                            help="Preview rows that would be imported without writing")
+    reg_import.add_argument("--force", action="store_true",
+                            help="Overwrite existing agent metadata with imported values")
+    reg_import.add_argument("--require-integrity", action="store_true",
+                            help="Reject inventories whose integrity digest is "
+                                 "missing or invalid (default: accept, for "
+                                 "backward compatibility)")
+
     reg_meta = reg_sub.add_parser("metadata", help="View or set agent metadata (owner, environment)")
     _common(reg_meta)
     reg_meta_sub = reg_meta.add_subparsers(dest="metadata_command")
@@ -167,6 +207,26 @@ def _build_parser():
     meta_get.add_argument("agent_id")
 
     sub.add_parser("welcome", help="Guided first-run experience for new users")
+
+    manifest = sub.add_parser("manifest", help="Validate or verify a KYA manifest (offline)")
+    manifest_sub = manifest.add_subparsers(dest="manifest_command")
+    man_validate = manifest_sub.add_parser("validate", help="Validate a manifest against Contract v1")
+    man_validate.add_argument("file", help="Path to safeai-manifest.json")
+    man_verify = manifest_sub.add_parser("verify", help="Verify a manifest integrity digest (offline)")
+    man_verify.add_argument("file", help="Path to safeai-manifest.json")
+
+    telemetry = sub.add_parser("telemetry", help="Manage opt-in usage telemetry")
+    telemetry.add_argument(
+        "telemetry_command",
+        choices=["status", "on", "off"],
+        help="Telemetry subcommand: status, on, or off",
+    )
+
+    rules = sub.add_parser("rules", help="Validate a community rule pack (offline)")
+    rules_sub = rules.add_subparsers(dest="rules_command")
+    rules_check = rules_sub.add_parser("check", help="Validate rules and run pack fixtures")
+    rules_check.add_argument("directory", nargs="?", default=".safeai/rules",
+                             help="Rule pack directory (default: .safeai/rules)")
 
     return parser
 
@@ -277,7 +337,9 @@ def _run_init(args):
       * ``.safeai/config.yml`` — project identity and defaults
       * ``.safeai/policy.yml`` — selected policy profile
       * ``.safeai/suppressions.yml`` — empty suppressions file with format hint
-      * ``.safeai/rules/`` — custom rules directory with example rule
+      * ``.safeai/rules/`` — custom rules directory with example rule,
+        plus a rule-pack authoring scaffold (``pack_example.yaml``,
+        ``fixtures/`` safe/risky examples, ``tests/test_pack.py``)
 
     Idempotent by default: existing files are skipped. ``--force`` overwrites.
     """
@@ -379,6 +441,90 @@ def _run_init(args):
         else:
             created.append("rules/example_rules.yaml")
 
+    # --- Rule-pack authoring scaffold (CE 2.3): example override rule,
+    # fixtures proving it takes effect, and a pack test template ---
+    pack_yaml = os.path.join(rules_dir, "pack_example.yaml")
+    if os.path.exists(pack_yaml) and not force:
+        skipped.append("rules/pack_example.yaml")
+    else:
+        os.makedirs(rules_dir, exist_ok=True)
+        pack_rule = (
+            "# Example rule pack: override a built-in rule's severity.\n"
+            "# Custom rules take effect as overrides of built-in rule IDs\n"
+            "# (see docs/guides/COMMUNITY_PACKS.md). Verify with:\n"
+            "#   safeai rules check .safeai/rules\n"
+            "- id: CAP_subprocess_shell\n"
+            "  description: subprocess invoked with shell=True (pack example override)\n"
+            "  severity: high\n"
+            "  owasp_llm: LLM01\n"
+        )
+        with open(pack_yaml, "w", encoding="utf-8") as fh:
+            fh.write(pack_rule)
+        if os.path.exists(pack_yaml) and force:
+            overwritten.append("rules/pack_example.yaml")
+        else:
+            created.append("rules/pack_example.yaml")
+
+    fixtures_dir = os.path.join(rules_dir, "fixtures")
+    pack_fixtures = {
+        "safe_example.py": (
+            '"""Safe fixture: no shell=True, so the pack rule must stay silent."""\n'
+            "\n"
+            "import subprocess\n"
+            "\n"
+            "\n"
+            "def list_dir(path):\n"
+            '    return subprocess.run(["ls", path], capture_output=True)\n'
+        ),
+        "risky_example.py": (
+            '"""Risky fixture: shell=True must fire CAP_subprocess_shell at pack severity."""\n'
+            "\n"
+            "import subprocess\n"
+            "\n"
+            "\n"
+            "def run_query(user_input):\n"
+            "    return subprocess.run(user_input, shell=True)\n"
+        ),
+    }
+    for filename, content in pack_fixtures.items():
+        fixture_path = os.path.join(fixtures_dir, filename)
+        if os.path.exists(fixture_path) and not force:
+            skipped.append(f"rules/fixtures/{filename}")
+            continue
+        os.makedirs(fixtures_dir, exist_ok=True)
+        with open(fixture_path, "w", encoding="utf-8") as fh:
+            fh.write(content)
+        if os.path.exists(fixture_path) and force:
+            overwritten.append(f"rules/fixtures/{filename}")
+        else:
+            created.append(f"rules/fixtures/{filename}")
+
+    pack_test_path = os.path.join(rules_dir, "tests", "test_pack.py")
+    if os.path.exists(pack_test_path) and not force:
+        skipped.append("rules/tests/test_pack.py")
+    else:
+        os.makedirs(os.path.join(rules_dir, "tests"), exist_ok=True)
+        pack_test = (
+            '"""Pack expected-findings test: run with pytest from the repo root."""\n'
+            "\n"
+            "import os\n"
+            "\n"
+            "from safeai.rules.pack_test import check_pack\n"
+            "\n"
+            "PACK_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))\n"
+            "\n"
+            "\n"
+            "def test_pack_fixtures_match_rules():\n"
+            "    errors, _warnings = check_pack(PACK_DIR)\n"
+            "    assert errors == []\n"
+        )
+        with open(pack_test_path, "w", encoding="utf-8") as fh:
+            fh.write(pack_test)
+        if os.path.exists(pack_test_path) and force:
+            overwritten.append("rules/tests/test_pack.py")
+        else:
+            created.append("rules/tests/test_pack.py")
+
     # --- Summary ---
     print("SafeAI project initialized.")
     print()
@@ -400,6 +546,56 @@ def _run_init(args):
     print(f"  2. Review .safeai/policy.yml (profile: {profile_name})")
     print("  3. Add custom rules to .safeai/rules/")
     print("  4. Run: safeai scan .")
+    print("  5. Check your rule pack: safeai rules check .safeai/rules")
+    return 0
+
+
+def _run_telemetry(args):
+    """Handle `safeai telemetry on/off/status` commands."""
+    from safeai.telemetry.config import (
+        get_status_text,
+        set_telemetry_enabled,
+    )
+
+    cmd = getattr(args, "telemetry_command", None)
+
+    if cmd == "status":
+        print(get_status_text())
+        return 0
+
+    if cmd == "on":
+        set_telemetry_enabled(True)
+        print("Telemetry enabled.")
+        print("Auto-disabled in CI unless SAFEAI_TELEMETRY_IN_CI=1 is also set.")
+        print("See PRIVACY.md for the full data contract.")
+        return 0
+
+    if cmd == "off":
+        set_telemetry_enabled(False)
+        print("Telemetry disabled.")
+        print("No data will be sent.")
+        return 0
+
+    print("Usage: safeai telemetry {status|on|off}")
+    return 1
+
+
+def _run_rules_check(args):
+    """Handle ``safeai rules check [dir]``: validate pack + fixtures."""
+    import os
+
+    from safeai.rules.pack_test import check_pack
+
+    pack_dir = os.path.abspath(args.directory)
+    errors, warnings = check_pack(pack_dir)
+    for warning in warnings:
+        print(f"warning: {warning}")
+    if errors:
+        print(f"Rule pack check failed ({len(errors)} error(s)) in {pack_dir}:")
+        for error in errors:
+            print(f"  - {error}")
+        return 1
+    print(f"Rule pack OK: {pack_dir}")
     return 0
 
 
@@ -408,26 +604,42 @@ def main(argv=None):
     parser = _build_parser()
     args = parser.parse_args(argv)
 
+    exit_code = 0
+
     if args.command == "scan":
-        return _run_scan_command(args, parser)
-
-    if args.command == "init":
-        return _run_init(args)
-
-    if args.command == "registry":
+        exit_code = _run_scan_command(args, parser)
+    elif args.command == "init":
+        exit_code = _run_init(args)
+    elif args.command == "registry":
         if not getattr(args, "registry_command", None):
             parser.error(
                 "registry requires a subcommand: "
-                "list|show|history|components|diff|export|metadata",
+                "list|show|history|components|diff|export|import|metadata",
             )
         from safeai.cmd.registry_cli import run_registry_command
-        return run_registry_command(args)
+        exit_code = run_registry_command(args)
+    elif args.command == "welcome":
+        exit_code = _run_welcome()
+    elif args.command == "manifest":
+        if not getattr(args, "manifest_command", None):
+            parser.error("manifest requires a subcommand: validate|verify")
+        from safeai.cmd.manifest_cli import run_manifest_command
+        exit_code = run_manifest_command(args)
+    elif args.command == "telemetry":
+        exit_code = _run_telemetry(args)
+    elif args.command == "rules":
+        if getattr(args, "rules_command", None) != "check":
+            parser.error("rules requires a subcommand: check")
+        exit_code = _run_rules_check(args)
+    else:
+        parser.print_help()
 
-    if args.command == "welcome":
-        return _run_welcome()
+    # Fire telemetry after command execution, before exit
+    if args.command and args.command != "telemetry":
+        from safeai.telemetry.client import send_telemetry
+        send_telemetry(args.command)
 
-    parser.print_help()
-    return 0
+    return exit_code
 
 
 if __name__ == "__main__":

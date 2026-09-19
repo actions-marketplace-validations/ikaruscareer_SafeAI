@@ -10,6 +10,8 @@ and raw prompt text for security risks:
 
 import re
 
+from safeai.analyzers import register_analyzer
+
 _UNTRUSTED_PLACEHOLDER_RE = re.compile(
     r"\{\{\s*(user_input|input|query|request|prompt|text|message|data|context)\s*\}\}"
     r"|\{\s*(user_input|input|query|request|prompt|text|message|data|context)\s*\}"
@@ -45,6 +47,7 @@ _INJECTION_PRONE_RE = re.compile(
 def _base_finding(rule_id, rule, message, path, line, evidence=None, reason=None, score_contribution=8):
     return {
         "rule_id": rule_id,
+        "evidence_type": "static-pattern",  # #94 - regex patterns over prompt files
         "severity": rule.get("severity", "medium"),
         "message": message,
         "file": path,
@@ -61,6 +64,7 @@ def _base_finding(rule_id, rule, message, path, line, evidence=None, reason=None
     }
 
 
+@register_analyzer(phase="component")
 class PromptFileAnalyzer:
     name = "prompt_file"
 

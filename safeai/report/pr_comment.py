@@ -20,6 +20,8 @@ Design constraints, all enforced by tests:
 * Nothing is posted anywhere. This module returns a string.
 """
 
+import sys
+
 from safeai.analysis.tool_identity import display_name
 from safeai.kya.assurance import BOUNDARY_SENTENCE
 from safeai.severity import ESCALATION_SEVERITIES
@@ -138,6 +140,22 @@ def _access_phrase(block):
     return str(block["status"] or "changed")
 
 
+def _recommended_action(escalation):
+    """One concise action for critical/high escalations (else None).
+
+    Tolerates escalations without remediation (old reports, hand-built
+    fixtures): those render exactly as before.
+    """
+    if str(escalation.get("severity", "")).lower() not in ("critical", "high"):
+        return None
+    remediation = escalation.get("remediation") or {}
+    actions = remediation.get("recommended_actions") or []
+    if not actions:
+        summary = (remediation.get("summary") or "").strip()
+        return summary or None
+    return str(actions[0]).strip() or None
+
+
 def _render_block(block):
     """Two lines per tool: what it is, then why it matters."""
     mark = _SEVERITY_MARK.get(block["severity"], block["severity"])
@@ -153,6 +171,9 @@ def _render_block(block):
         parts.append(f"+{extra} more {_plural(extra, 'escalation')}")
     if parts:
         lines.append("  " + " · ".join(parts))
+    action = _recommended_action(primary)
+    if action:
+        lines.append(f"  → {action}")
     lines.append("")
     return lines
 
@@ -226,7 +247,9 @@ def _truncate(lines, total_blocks, shown_blocks):
     remaining = total_blocks - shown_blocks
     if len(lines) + 2 <= MAX_LINES and remaining <= 0:
         return lines
-    budget = MAX_LINES - 3  # truncation notice, blank line, footer
+    # Budget accounts for everything appended afterwards: the truncation
+    # notice + blank line here, plus the caller's blank line + footer.
+    budget = MAX_LINES - 4
     trimmed = lines[:budget]
     while trimmed and trimmed[-1] == "":
         trimmed.pop()
@@ -293,3 +316,112 @@ def write_pr_comment(report, path, ci_context=None):
     with open(path, "w", encoding="utf-8", newline="\n") as handle:
         handle.write(text)
     return text
+
+
+def post_pr_comment(report, ci_context=None, token=None):
+    """Post or update the PR comment on GitHub.
+
+    Uses the GitHub API to find an existing comment with the MARKER and
+    update it, or create a new comment if none exists. Returns the comment
+    URL on success, None on failure.
+
+    Requires:
+    - ci_context with ``pr_number`` and ``repository``
+    - A GitHub token with ``pull_requests: write`` permission
+    """
+    import os
+
+    if ci_context is None:
+        ci_context = {}
+    pr_number = ci_context.get("pr_number")
+    repository = ci_context.get("repository")
+    if not pr_number or not repository:
+        return None
+
+    token = token or os.environ.get("GITHUB_TOKEN", "")
+    if not token:
+        return None
+
+    text = render_pr_comment(report, ci_context=ci_context)
+    api_base = f"https://api.github.com/repos/{repository}"
+
+    # Explicit integration boundary: the scanner is offline by default;
+    # this is the one path that makes a network request, and it says so.
+    sys.stderr.write(
+        "Integration mode enabled: SafeAI is making an explicit GitHub API "
+        "request to post/update a PR comment.\n"
+    )
+
+    # Find existing comment with our marker
+    comment_id = _find_existing_comment(api_base, pr_number, token)
+    if comment_id:
+        # Update existing comment
+        return _update_comment(api_base, comment_id, text, token)
+    else:
+        # Create new comment
+        return _create_comment(api_base, pr_number, text, token)
+
+
+def _find_existing_comment(api_base, pr_number, token):
+    """Find an existing SafeAI PR comment by marker."""
+    import json
+    import urllib.error
+    import urllib.request
+
+    url = f"{api_base}/issues/{pr_number}/comments?per_page=100"
+    req = urllib.request.Request(url, headers={
+        "Authorization": f"token {token}",
+        "Accept": "application/vnd.github.v3+json",
+    })
+    try:
+        with urllib.request.urlopen(req) as resp:
+            comments = json.loads(resp.read())
+            for comment in comments:
+                if MARKER in comment.get("body", ""):
+                    return comment["id"]
+    except (urllib.error.URLError, json.JSONDecodeError):
+        pass
+    return None
+
+
+def _create_comment(api_base, pr_number, text, token):
+    """Create a new PR comment."""
+    import json
+    import urllib.error
+    import urllib.request
+
+    url = f"{api_base}/issues/{pr_number}/comments"
+    data = json.dumps({"body": text}).encode()
+    req = urllib.request.Request(url, data=data, headers={
+        "Authorization": f"token {token}",
+        "Accept": "application/vnd.github.v3+json",
+        "Content-Type": "application/json",
+    })
+    try:
+        with urllib.request.urlopen(req) as resp:
+            result = json.loads(resp.read())
+            return result.get("html_url")
+    except (urllib.error.URLError, json.JSONDecodeError):
+        return None
+
+
+def _update_comment(api_base, comment_id, text, token):
+    """Update an existing PR comment."""
+    import json
+    import urllib.error
+    import urllib.request
+
+    url = f"{api_base}/issues/comments/{comment_id}"
+    data = json.dumps({"body": text}).encode()
+    req = urllib.request.Request(url, data=data, headers={
+        "Authorization": f"token {token}",
+        "Accept": "application/vnd.github.v3+json",
+        "Content-Type": "application/json",
+    })
+    req.get_method = lambda: "PATCH"
+    try:
+        with urllib.request.urlopen(req) as resp:
+            result = json.loads(resp.read())
+            return result.get("html_url")
+    except (urllib.error.URLError, json.JSONDecodeError):
+        return None
