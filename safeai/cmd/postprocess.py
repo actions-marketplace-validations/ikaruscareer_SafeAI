@@ -88,10 +88,10 @@ class ScanPostProcessor:
             return early
         self._compare_baseline()
         self._evaluate_policy()
+        self._resolve_identity()
         early = self._evaluate_exceptions()
         if early is not None:
             return early
-        self._resolve_identity()
         self._build_manifest()
         early = self._persist_registry()
         if early is not None:
@@ -210,6 +210,17 @@ class ScanPostProcessor:
             if profile is None:
                 self.parser.error(f"Unknown policy profile: {profile_name!r}")
             policy_doc = kya_policy.merge_profile(profile, policy_doc)
+        # CLI fallback for UNKNOWN authority governance: an explicit policy
+        # file (or profile) setting always wins; the flag only fills the gap.
+        if policy_doc is None:
+            policy_doc = {"version": "1", "default_action": "warn", "policies": []}
+        unknown_cli = getattr(self.args, "unknown_authority", None)
+        if unknown_cli and not (policy_doc.get("authority") or {}).get("unknown"):
+            policy_doc = dict(policy_doc)
+            policy_doc["authority"] = {
+                "unknown": {"pass": "allow", "review": "require_review",
+                            "block": "deny"}[unknown_cli],
+            }
         self.policy_decision = kya_policy.evaluate_policy(policy_doc, self.report)
         self.report["policy_decision"] = self.policy_decision
         self.report["policy_profile"] = profile_name
@@ -231,15 +242,33 @@ class ScanPostProcessor:
             self.report["exception_evaluations"] = []
             return None
         escalations = []
-        for tool in ((self.report.get("capability_diff") or {}).get("tools") or []):
+        diff_tools = ((self.report.get("capability_diff") or {}).get("tools") or [])
+        for tool in diff_tools:
             escalations.extend(tool.get("escalations") or [])
+        policy_ids = [
+            m.get("policy_id")
+            for m in (self.policy_decision.get("matches") or [])
+            if m.get("policy_id")
+        ]
+        changed_tool_keys = [
+            t.get("tool_key") for t in diff_tools
+            if t.get("change_class") in ("MATERIAL_CHANGE", "HIGH_RISK_CHANGE")
+        ]
+        identities = {
+            self.project_id,
+            os.path.basename(self.directory) or None,
+            self.remote_fp,
+        } - {None}
         evaluations = kya_exceptions.evaluate_exceptions(
-            entries, self.report.get("findings"), escalations)
+            entries, self.report.get("findings"), escalations,
+            policy_ids=policy_ids, changed_tool_keys=changed_tool_keys,
+            project_identities=identities)
         for evaluation in evaluations:
             for warning in evaluation.get("warnings") or []:
                 print(f"warning: {warning}", file=sys.stderr)
         self.report["exception_evaluations"] = evaluations
-        bad = [e for e in evaluations if e["state"] in ("expired", "stale")]
+        bad = [e for e in evaluations
+               if e["state"] in ("expired", "stale", "scope-mismatch", "invalid")]
         if getattr(self.args, "strict_exceptions", False) and bad:
             print("error: --strict-exceptions is set; expired or stale exceptions detected",
                   file=sys.stderr)

@@ -105,6 +105,12 @@ runtime identity) is explicitly **unknown** to the static scanner —
 *unknown is an evidence state, not evidence of safety*, and SafeAI never
 converts it into a pass.
 
+**What decisions mean.** `pass` means no configured deterministic gate
+triggered — never "the agent is safe." `unknown` means unattributable
+evidence — never "no risk detected." Organizations can govern unknown
+authority explicitly (`authority.unknown` policy, `--unknown-authority`),
+but the default leaves it visible and unfailed.
+
 ---
 
 <img width="1024" height="1024" alt="SafeAI_Concept" src="https://github.com/user-attachments/assets/c07999b2-79d5-4200-9eec-ce1ab4e63cc8" />
@@ -133,7 +139,7 @@ converts it into a pass.
 | **Baseline & Escalation Gating** | `--fail-on-new` for new/regressed findings, `--fail-on-escalation` for authority changes, `--pr-comment` PR summaries |
 | **Policy-as-Code & Suppressions** | `allow`/`warn`/`require_review`/`deny` policy with selectors; required-reason suppressions |
 | **Assurance Boundary** | Every scan states exactly what it did and could not verify — never a fixed disclaimer |
-| **Security Scorecard** | Deterministic 0–10 score with per-category breakdown and `pass`/`warn`/`fail` outcome; `--scorecard`, `--scorecard-json`, `--scorecard-summary`, and `--scorecard-fail-under` to gate CI on a minimum score |
+| **Security Scorecard** | Deterministic 0–10 score with per-category breakdown and `pass`/`warn`/`fail` outcome; informational unless you opt into `--scorecard-fail-under` gating — evidence and policy decide, the score does not |
 | **CI/CD Integration** | SARIF 2.1.0 output, exit codes, GitHub Actions **Marketplace action** and workflow included |
 | **Community Scan** | Governed private-pilot workflow for scanning public third-party agent frameworks with responsible disclosure (`community-scans/`) — private by default, human-reviewed before any publication |
 | **Multi-Format Reports** | Terminal, JSON, SARIF 2.1.0, HTML, canonical KYA manifest, PR comment, Security Scorecard |
