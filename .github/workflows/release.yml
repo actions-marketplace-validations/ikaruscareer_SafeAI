@@ -387,7 +387,14 @@ jobs:
             dist/*.tar.gz
 
       - name: Install Cosign
-        uses: sigstore/cosign-installer@7e8b541eb2e61bf99390e1afd4be13a184e9ebc5 # v3.10.1
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          # Pinned explicitly: the installer's own default (v3.0.6) fails its
+          # version validation and falls back to building cosign from HEAD,
+          # whose --bundle-only CLI breaks sign-blob below. v2.6.x validates
+          # and supports --output-signature/--output-certificate natively.
+          # Keep this pin when Dependabot bumps the installer action itself.
+          cosign-release: v2.6.1
 
       - name: Sign artifacts with Cosign (keyless)
         run: |
@@ -396,6 +403,21 @@ jobs:
           done
           echo "Cosign signatures:"
           ls -la dist/*.sig dist/*.pem
+
+      - name: Verify signatures with Cosign (fail closed)
+        # Signing completing is NOT evidence of integrity: every
+        # signature/certificate pair is verified against its artifact and
+        # the expected keyless identity before anything is published.
+        # Any verification failure fails this step (bash -e) and blocks
+        # the publish/release jobs via `needs: [checklist, sign]`.
+        run: |
+          for f in dist/*.whl dist/*.tar.gz; do
+            cosign verify-blob --signature "${f}.sig" --certificate "${f}.pem" \
+              --certificate-identity-regexp "https://github.com/${{ github.repository }}/.*" \
+              --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+              "$f"
+            echo "Verified: $f"
+          done
 
       - name: Prepare release assets
         run: |

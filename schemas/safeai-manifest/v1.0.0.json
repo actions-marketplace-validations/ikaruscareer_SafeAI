@@ -103,6 +103,8 @@
           "remediation": {"type": ["string", "null"]},
           "confidence": {"type": ["string", "null"]},
           "provenance": {"type": "object"},
+          "provenance_class": {"enum": ["declared", "detected", "inferred", "unknown"]},
+          "gateability": {"enum": ["deterministic", "review-only"]},
           "location": {"type": "object"},
           "fingerprint": {"type": ["string", "null"]},
           "status": {"type": "string"}
@@ -119,6 +121,8 @@
         "agent_count": {"type": "integer"},
         "component_count": {"type": "integer"},
         "dependency_count": {"type": "integer"},
+        "authority_change_counts": {"type": "object"},
+        "highest_change_class": {"enum": ["NO_CHANGE", "LOW_CHANGE", "MATERIAL_CHANGE", "HIGH_RISK_CHANGE", "UNKNOWN"]},
         "policy_decision": {
           "type": "object",
           "required": ["outcome"],
@@ -145,6 +149,37 @@
           "after": {"type": ["string", "null"]},
           "confidence": {"type": ["string", "null"]},
           "remediation": {"type": "object"}
+        }
+      }
+    },
+    "authority_changes": {
+      "description": "Compact per-tool authority changes (v2.4 portable change evidence).",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["tool_key", "change_class"],
+        "properties": {
+          "tool_key": {"type": "string"},
+          "status": {"type": ["string", "null"]},
+          "change_class": {"enum": ["NO_CHANGE", "LOW_CHANGE", "MATERIAL_CHANGE", "HIGH_RISK_CHANGE", "UNKNOWN"]},
+          "change_types": {"type": "array", "items": {"type": "string"}},
+          "inferred_only": {"type": "boolean"}
+        }
+      }
+    },
+    "exception_evaluations": {
+      "description": "Policy exception evaluation records (v2.4 exception evidence).",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["exception_id", "state"],
+        "properties": {
+          "exception_id": {"type": "string"},
+          "target_type": {"type": "string"},
+          "target_id": {"type": ["string", "null"]},
+          "state": {"enum": ["active", "expired", "stale", "scope-mismatch", "invalid"]},
+          "risk_owner": {"type": ["string", "null"]},
+          "expires_at": {"type": ["string", "null"]}
         }
       }
     },

@@ -204,6 +204,68 @@ def _first_scan_summary(report):
     return lines
 
 
+def _dataflow_paths(report, budget=7):
+    """Newly reachable source→sink paths as compact Markdown lines.
+
+    Only new/regressed ``DATAFLOW_*`` findings (baseline mode) surface
+    here, alongside escalations. Paths are single-file heuristics — the
+    heading says so. Returns at most ``budget`` lines including the
+    heading and a ``+N more`` overflow line.
+    """
+    ranked = []
+    for finding in report.get("findings") or []:
+        rule_id = str(finding.get("rule_id") or "")
+        if not rule_id.startswith("DATAFLOW_"):
+            continue
+        if finding.get("status") not in ("new", "regressed"):
+            continue
+        sink = rule_id[len("DATAFLOW_"):]
+        evidence = str(finding.get("evidence") or "")
+        source = ""
+        if "->" in evidence:
+            source = evidence.split("->")[0].replace("source:", "").strip()
+        label = f"{source} → {sink}" if source else sink
+        where = f"{finding.get('file')}:{finding.get('line')}"
+        ranked.append((_severity_rank(finding.get("severity")), label, where))
+
+    if not ranked:
+        return []
+    ranked.sort(key=lambda item: (item[0], item[1], item[2]))
+
+    lines = ["**New data-flow paths** (heuristic, single-file — not verified):", ""]
+    shown = ranked[: max(0, budget - 3)]
+    for _, label, where in shown:
+        lines.append(f"- `{label}` in `{where}`")
+    hidden = len(ranked) - len(shown)
+    if hidden > 0:
+        lines.append(f"- +{hidden} more {_plural(hidden, 'path')}")
+    return lines[:budget]
+
+
+def _review_questions(report, budget=7):
+    """Lane-B policy matches as reviewer questions (never CI gates).
+
+    Returns at most ``budget`` lines including the heading and overflow
+    line. Empty when no Lane-B matches exist.
+    """
+    seen = []
+    decision = report.get("policy_decision") or {}
+    for match in decision.get("matches") or []:
+        if match.get("lane") != "B":
+            continue
+        seen.append((match.get("policy_id") or "review",
+                     match.get("message") or "requires human review"))
+    if not seen:
+        return []
+    lines = ["**Human review** (questions for a reviewer — not CI gates):", ""]
+    for policy_id, message in seen[: max(0, budget - 3)]:
+        lines.append(f"- ? [{policy_id}] {message}")
+    hidden = len(seen) - len(lines) + 2
+    if hidden > 0:
+        lines.append(f"- +{hidden} more {_plural(hidden, 'question')}")
+    return lines[:budget]
+
+
 def _details_line(report, diff, shown):
     """One collapsed line of context. Never expands the reviewer's work."""
     counts = diff.get("counts") or {}
@@ -301,6 +363,20 @@ def render_pr_comment(report, ci_context=None):
         shown += 1
 
     lines.extend(body)
+    # Newly reachable data-flow paths ride alongside escalations inside the
+    # same line budget (details line + footer need 4 reserved lines;
+    # _truncate below still enforces the hard cap).
+    remaining = MAX_LINES - 4 - len(lines) - 2
+    if remaining > 3:
+        sections = _dataflow_paths(report, budget=remaining)
+        questions = _review_questions(
+            report, budget=max(0, remaining - len(sections)))
+        if sections and questions:
+            sections.append("")
+        sections.extend(questions)
+        if sections:
+            lines.extend(sections)
+            lines.append("")
     lines.extend(_details_line(report, diff, shown))
     lines = _truncate(lines, len(blocks), shown)
 

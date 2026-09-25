@@ -85,15 +85,30 @@ def _build_parser():
     scan.add_argument("--fail-on-escalation", choices=["critical", "high", "medium"],
                       help="Fail the scan when a capability escalation at or above "
                            "this severity is detected (requires --baseline)")
+    scan.add_argument("--fail-on-authority-change", choices=["material", "high-risk"],
+                      help="With --baseline: fail on tool authority changes at or above "
+                           "this class (material includes high-risk). Inferred-only "
+                           "changes never fail this gate; UNKNOWN never fails.")
     scan.add_argument("--policy",
                       help="Policy-as-code YAML file (default: <scan-root>/.safeai/policy.yml if present)")
     scan.add_argument("--policy-profile",
                       choices=["developer", "strict-ci", "mcp", "rag", "production-agent"],
                       help="Named policy profile to load (extends --policy, does not replace it)")
+    scan.add_argument("--unknown-authority", choices=["pass", "review", "block"],
+                      help="How to govern unattributable (UNKNOWN) tool authority when the "
+                           "policy file sets no authority.unknown: pass (default, unchanged), "
+                           "review (require human review), or block. Explicit policy file "
+                           "setting always wins.")
     scan.add_argument("--suppressions",
                       help="Suppressions YAML file (default: <scan-root>/.safeai/suppressions.yml if present)")
     scan.add_argument("--strict-suppressions", action="store_true",
                       help="Fail the scan (exit 1) when expired or moved suppressions are detected")
+    scan.add_argument("--exceptions",
+                      help="Policy exception records YAML file "
+                           "(default: <scan-root>/.safeai/exceptions.yml if present)")
+    scan.add_argument("--strict-exceptions", action="store_true",
+                      help="Fail the scan (exit 1) when expired or stale exceptions are detected "
+                           "(default: warn only)")
     # --- SafeAI Security Scorecard ---
     scan.add_argument("--scorecard", dest="scorecard_path",
                       help="Write the SafeAI Security Scorecard Markdown report to PATH")
